@@ -44,7 +44,27 @@ def register_oot_ops(whitelist: Optional[List[str]] = None) -> None:
     Operators in VLLM_FL_OOT_BLACKLIST or platform config oot_blacklist
     will be excluded from registration.
     """
+    from vllm.platforms import current_platform
     from vllm_fl.utils import get_oot_blacklist, get_oot_whitelist, is_oot_enabled, use_flaggems_op
+
+    if current_platform.device_type == "npu":
+        # Ascend graph fusion passes use vllm_ascend torch custom ops directly.
+        # Importing this module registers ops such as
+        # torch.ops.vllm.maybe_all_gather_and_maybe_unpad before torch.compile
+        # traces the fusion patterns.
+        try:
+            import torch
+            from vllm.forward_context import ForwardContext
+
+            if not hasattr(ForwardContext, "is_multimodal_model"):
+                ForwardContext.is_multimodal_model = False
+            if not hasattr(ForwardContext, "sp_enabled"):
+                ForwardContext.sp_enabled = False
+
+            if not hasattr(torch.ops.vllm, "maybe_all_gather_and_maybe_unpad"):
+                import vllm_ascend.ops.register_custom_ops  # noqa: F401
+        except Exception as e:
+            logger.warning("Register Ascend custom torch ops failed: %s", e)
 
     # Check if OOT registration is enabled
     if not is_oot_enabled():
@@ -82,7 +102,6 @@ def register_oot_ops(whitelist: Optional[List[str]] = None) -> None:
         # These replace upstream module-level functions (e.g. in qwen3_next) with
         # vendor implementations that bypass the CustomOp/dispatch path.
         # Each apply_*_patches() is idempotent (guarded by _patches_applied flag).
-        from vllm.platforms import current_platform
         if current_platform.device_type == "npu":
             from vllm_fl.dispatch.backends.vendor.ascend.patch import apply_ascend_patches
             apply_ascend_patches()

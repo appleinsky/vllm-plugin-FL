@@ -20,6 +20,7 @@ from torch import fx as fx
 from vllm.compilation.inductor_pass import get_pass_context
 from vllm.compilation.vllm_inductor_pass import VllmInductorPass
 from vllm.config import VllmConfig
+from vllm.logger import logger
 
 
 def _is_310p() -> bool:
@@ -69,9 +70,16 @@ class GraphFusionPassManager:
             self.passes.append(AddRMSNormQuantFusionPass(config))
 
         if self.ascend_compilation_config.get("fuse_qknorm_rope", True):
-            from .passes.qknorm_rope_fusion_pass import QKNormRopeFusionPass
-
-            self.passes.append(QKNormRopeFusionPass(config))
+            try:
+                from .passes.qknorm_rope_fusion_pass import QKNormRopeFusionPass
+            except ModuleNotFoundError as e:
+                if e.name != "vllm_ascend.device":
+                    raise
+                logger.warning(
+                    "Skipping QKNormRopeFusionPass: vllm_ascend.device is not available"
+                )
+            else:
+                self.passes.append(QKNormRopeFusionPass(config))
 
         if self.ascend_compilation_config.get("fuse_allreduce_rms", True):
             from .passes.allreduce_rmsnorm_fusion_pass import MatmulAllReduceAddRMSNormPass
