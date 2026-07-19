@@ -137,12 +137,11 @@ def _configure_backend(
             * vllm_config.parallel_config.data_parallel_size_local
         )
         os.environ["LOCAL_WORLD_SIZE"] = str(actual_local_world_size)
-        logger.info_once(
+        logger.info(
             "Setting LOCAL_WORLD_SIZE=%d for static kernel (local_world_size=%d * data_parallel_size_local=%d).",
             actual_local_world_size,
             vllm_config.parallel_config.local_world_size,
             vllm_config.parallel_config.data_parallel_size_local,
-            scope="global",
         )
 
     if process_kwargs_options is not None:
@@ -153,9 +152,8 @@ def _configure_backend(
             "clone_output": False,
         }
         if enable_static_kernel:
-            logger.info_once(
-                "enable_static_kernel is enabled, static shape kernel will be used to accelerate aclgraph execution.",
-                scope="global",
+            logger.info(
+                "enable_static_kernel is enabled, static shape kernel will be used to accelerate aclgraph execution."
             )
             options["static_kernel_compile"] = True
             options["_vllm_aclnn_static_kernel_sym_range"] = (
@@ -167,9 +165,8 @@ def _configure_backend(
         config.debug.run_eagerly = True
         config.debug.aclgraph.disable_reinplace_inplaceable_ops_pass = True
         if enable_static_kernel:
-            logger.info_once(
-                "enable_static_kernel is enabled, static shape kernel will be used to accelerate aclgraph execution.",
-                scope="global",
+            logger.info(
+                "enable_static_kernel is enabled, static shape kernel will be used to accelerate aclgraph execution."
             )
             config.experimental_config.aclgraph._aclnn_static_shape_kernel = True
             config.experimental_config.aclgraph._aclnn_static_shape_kernel_sym_value_range = (
@@ -205,10 +202,24 @@ def npugraph_ex_compile(
     key: str | None = None,
     cache_dir: str | None = None,
 ) -> tuple[Callable | None, Any | None]:
+    logger.info(
+        "Entering npugraph_ex_compile: key=%s cache_dir=%s compile_range=%s "
+        "enable_npugraph_ex=%s enable_static_kernel=%s",
+        key,
+        cache_dir,
+        compile_range,
+        _config_get(ascend_compilation_config, "enable_npugraph_ex", False),
+        _config_get(ascend_compilation_config, "enable_static_kernel", False),
+    )
     try:
         import npugraph_ex as nge
 
         cache_path = os.path.join(cache_dir, key) if (cache_dir and key) else None
+        logger.info(
+            "Using npugraph_ex backend for Ascend compilation: key=%s cache_path=%s",
+            key,
+            cache_path,
+        )
         torch.npu.set_compile_mode(jit_compile=False)
         config = nge.CompilerConfig()
         try:
@@ -257,6 +268,10 @@ def npugraph_ex_compile(
     except ImportError:
         import torchair
 
+        logger.info(
+            "npugraph_ex is unavailable; using torchair backend for Ascend compilation: key=%s",
+            key,
+        )
         torch.npu.set_compile_mode(jit_compile=False)
         config = torchair.CompilerConfig()
         _configure_backend(config, ascend_compilation_config, vllm_config)
@@ -309,15 +324,24 @@ class AscendCompiler(CompilerInterface):
         ascend_compilation_config = _get_ascend_compilation_config(
             getattr(self, "vllm_config", None)
         )
+        logger.info(
+            "AscendCompiler.compile invoked: key=%s compile_range=%s "
+            "env_VLLM_FL_ENABLE_NPUGRAPH_EX=%s config_enable_npugraph_ex=%s "
+            "config_enable_static_kernel=%s",
+            key,
+            compile_range,
+            os.environ.get("VLLM_FL_ENABLE_NPUGRAPH_EX"),
+            _config_get(ascend_compilation_config, "enable_npugraph_ex", False),
+            _config_get(ascend_compilation_config, "enable_static_kernel", False),
+        )
         if _config_get(ascend_compilation_config, "enable_npugraph_ex", False):
             cache_dir = (
                 None
                 if getattr(self, "disable_cache", False)
                 else getattr(self, "cache_dir", None)
             )
-            logger.info_once(
-                "enable_npugraph_ex is enabled, which will bring graph compilation optimization.",
-                scope="global",
+            logger.info(
+                "enable_npugraph_ex is enabled, which will bring graph compilation optimization."
             )
             assert hasattr(self, "vllm_config")
             return npugraph_ex_compile(

@@ -28,6 +28,7 @@ from vllm.compilation.counter import compilation_counter
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor, get_forward_context
 from vllm.platforms import current_platform
+from vllm.sequence import IntermediateTensors
 
 from vllm_fl.compilation.graph import register_graph_wrapper_backend
 
@@ -154,11 +155,35 @@ def update_draft_graph_prefill_params_workspaces(num_tokens: int,
 def get_draft_graph_prefill_params() -> Optional[GraphParams]:
     return _draft_graph_prefill_params
 
+# 优先使用 torch_npu._C._weak_ref_tensor，对齐 vllm-ascend 的行为。
+# 如果当前环境没有 torch_npu._C._weak_ref_tensor，安全降级为原 tensor，不阻断启动。
+def weak_ref_tensor(tensor: Any) -> Any:
+    """Create an NPU weak reference without keeping the source tensor alive."""
+    if not isinstance(tensor, torch.Tensor):
+        return tensor
+    try:
+        import torch_npu
 
-def weak_ref_tensors(tensor: Any) -> Any:
-    """Convert tensors to weak references to save memory during graph replay."""
-    from vllm_fl.compilation.graph import weak_ref_tensors as _generic_weak_ref
-    return _generic_weak_ref(tensor)
+        return torch_npu._C._weak_ref_tensor(tensor)
+    except Exception:
+        logger.debug("NPU weak-ref tensor is unavailable; keeping strong tensor reference")
+        return tensor
+
+
+def weak_ref_tensors(tensors: Any) -> Any:
+    """Convert tensors to NPU weak references to save memory during graph replay."""
+    if isinstance(tensors, torch.Tensor):
+        return weak_ref_tensor(tensors)
+    if isinstance(tensors, list):
+        return [weak_ref_tensor(tensor) for tensor in tensors]
+    if isinstance(tensors, tuple):
+        return tuple(weak_ref_tensor(tensor) for tensor in tensors)
+    if isinstance(tensors, IntermediateTensors):
+        return IntermediateTensors({
+            key: weak_ref_tensor(value)
+            for key, value in tensors.tensors.items()
+        })
+    return tensors
 
 
 def weak_ref_workspaces(params: Optional[GraphParams]) -> None:
@@ -311,9 +336,7 @@ class ACLGraphBackendMixin:
             torch.npu.current_stream().synchronize()
 
     def weak_ref_tensors(self, tensor: Any) -> Any:
-        # Ascend does not yet have a dedicated weak-ref csrc op; fall back to
-        # the generic implementation which currently returns the tensor as-is.
-        return tensor
+        return weak_ref_tensors(tensor)
 
 
 def patch_graph() -> None:
