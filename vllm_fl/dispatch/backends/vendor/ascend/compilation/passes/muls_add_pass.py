@@ -23,8 +23,8 @@ from vllm.config import VllmConfig
 from vllm.config.compilation import Range
 from vllm.logger import logger
 
-from vllm_ascend.compilation.passes.base_pattern import BasePattern
-
+#from vllm_ascend.compilation.passes.base_pattern import BasePattern
+from .base_pattern import BasePattern
 
 class MulsAddPattern(BasePattern):
     """
