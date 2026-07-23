@@ -71,6 +71,10 @@ from vllm_fl.utils import get_flag_gems_whitelist_blacklist
 
 logger = init_logger(__name__)
 
+
+def _get_ascend_compilation_config(vllm_config: VllmConfig) -> dict[str, Any]:
+    return (vllm_config.additional_config or {}).get("ascend_compilation_config", {})
+
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
 
@@ -230,6 +234,13 @@ class WorkerFL(WorkerBase):
         else:
             self.profiler = None
 
+        ascend_compilation_config = _get_ascend_compilation_config(vllm_config)
+        if (
+            ascend_compilation_config.get("enable_npugraph_ex", False)
+            and ascend_compilation_config.get("enable_static_kernel", False)
+        ):
+            self._install_static_kernel_signal_handlers()
+
         logger.debug("=== ENVIRONMENT VARIABLES ===")
         for k, v in sorted(os.environ.items()):
             logger.debug("%s=%r", k, v)
@@ -264,6 +275,74 @@ class WorkerFL(WorkerBase):
                 flag_gems.enable(
                     record=True, once=True, path=fl_envs.FLAGGEMS_ENABLE_OPLIST_PATH
                 )
+
+    def _install_static_kernel_signal_handlers(self) -> None:
+        """Uninstall npugraph_ex static kernels on worker termination."""
+        import signal
+
+        shutdown_requested = False
+
+        def signal_handler(signum, frame):
+            nonlocal shutdown_requested
+            if not shutdown_requested:
+                shutdown_requested = True
+                self.uninstall_static_kernel()
+            raise SystemExit()
+
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        logger.info(
+            "Registered static kernel cleanup handlers for npugraph_ex static kernel"
+        )
+
+    def uninstall_static_kernel(self) -> None:
+        """Run Ascend static-kernel uninstall script once per host."""
+        import fcntl
+        import subprocess
+
+        ascend_home_path = os.environ.get("ASCEND_HOME_PATH")
+        if not ascend_home_path:
+            logger.warning(
+                "Skipping static kernel uninstall: ASCEND_HOME_PATH is not set"
+            )
+            return
+
+        static_kernel_dir_path = os.path.join(ascend_home_path, "opp/static_kernel")
+        uninstall_script_path = os.path.join(
+            static_kernel_dir_path, "ai_core/uninstall.sh"
+        )
+        lock_file_path = os.path.join(static_kernel_dir_path, "uninstall.lock")
+
+        if not os.path.exists(uninstall_script_path):
+            logger.info(
+                "Skipping static kernel uninstall: script does not exist: %s",
+                uninstall_script_path,
+            )
+            return  
+
+        with open(lock_file_path, "w") as lock_fd:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                subprocess.Popen(
+                    ["bash", uninstall_script_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                logger.info(
+                    "Triggered npugraph_ex static kernel uninstall: %s",
+                    uninstall_script_path,
+                )
+            except (BlockingIOError, OSError):
+                return
+            finally:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    if os.path.exists(lock_file_path):
+                        os.remove(lock_file_path)
+                except Exception:
+                    return
 
     # def sleep(self, level: int = 1) -> None:
     #     TODO(lms): rewrite CuMemAllocator
