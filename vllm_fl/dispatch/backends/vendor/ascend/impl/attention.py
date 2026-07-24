@@ -52,48 +52,48 @@ from vllm_fl.dispatch.backends.vendor.ascend.patches.patch_graph import (
     weak_ref_tensors,
 )
 
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-    # Ascend npu_fused_infer_attention_score with input_layout="TND" only supports
-    # head_dim in {64, 128, 192} (plus the special qD=kD=192, vD=128 case).
-    _PFA_TND_SUPPORTED_HEAD_DIMS = frozenset({64, 128, 192})
+# Ascend npu_fused_infer_attention_score with input_layout="TND" only supports
+# head_dim in {64, 128, 192} (plus the special qD=kD=192, vD=128 case).
+_PFA_TND_SUPPORTED_HEAD_DIMS = frozenset({64, 128, 192})
 
-    # Check torch_npu availability and setup NPU compatibility
-    _TORCH_NPU_AVAILABLE = False
-    try:
-        import torch_npu
-        _TORCH_NPU_AVAILABLE = True
+# Check torch_npu availability and setup NPU compatibility
+_TORCH_NPU_AVAILABLE = False
+try:
+    import torch_npu
+    _TORCH_NPU_AVAILABLE = True
 
-        # NPU compatibility: Replace torch.Event and torch.cuda.Stream with NPU versions
-        # This is similar to vllm-ascend's _torch_cuda_wrapper approach
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            torch.Event = torch.npu.Event
-            torch.cuda.Event = torch.npu.Event
-            torch.cuda.Stream = torch.npu.Stream
-            logger.info("NPU compatibility enabled: torch.Event -> torch.npu.Event")
-    except ImportError as e:
-        raise ImportError(
-            "torch_npu is required for Ascend attention backend. "
-            "Please install torch_npu for NPU support."
-        ) from e
-
-
-    def is_torch_npu_available() -> bool:
-        """Check if torch_npu is available."""
-        return _TORCH_NPU_AVAILABLE
+    # NPU compatibility: Replace torch.Event and torch.cuda.Stream with NPU versions
+    # This is similar to vllm-ascend's _torch_cuda_wrapper approach
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        torch.Event = torch.npu.Event
+        torch.cuda.Event = torch.npu.Event
+        torch.cuda.Stream = torch.npu.Stream
+        logger.info("NPU compatibility enabled: torch.Event -> torch.npu.Event")
+except ImportError as e:
+    raise ImportError(
+        "torch_npu is required for Ascend attention backend. "
+        "Please install torch_npu for NPU support."
+    ) from e
 
 
-    # Ascend platform specific configurations
-    ASCEND_SAMPLED_TOKEN_IDS_DTYPE = torch.int32  # NPU uses int32, CUDA uses int64
+def is_torch_npu_available() -> bool:
+    """Check if torch_npu is available."""
+    return _TORCH_NPU_AVAILABLE
 
 
-    class AscendAttentionState(Enum):
-        """Attention state for Ascend backend."""
-        PrefillNoCache = 0
-        PrefillCacheHit = 1
-        DecodeOnly = 2
-        ChunkedPrefill = 3
-        SpecDecoding = 4
+# Ascend platform specific configurations
+ASCEND_SAMPLED_TOKEN_IDS_DTYPE = torch.int32  # NPU uses int32, CUDA uses int64
+
+
+class AscendAttentionState(Enum):
+    """Attention state for Ascend backend."""
+    PrefillNoCache = 0
+    PrefillCacheHit = 1
+    DecodeOnly = 2
+    ChunkedPrefill = 3
+    SpecDecoding = 4
 
 
     @dataclass
